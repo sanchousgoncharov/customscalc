@@ -27,4 +27,12 @@ CREATE TABLE "calculations" (
   "result_cost" integer
 );
 
+CREATE TABLE "calculation_params" (
+  "id" SERIAL PRIMARY KEY,
+  "param_name" VARCHAR(50) UNIQUE NOT NULL,
+  "param_value" FLOAT NOT NULL,
+  "description" VARCHAR(255),
+  "updated_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 ALTER TABLE "calculations" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id");
