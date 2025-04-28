@@ -82,21 +82,52 @@ def save_calculation(user_id, data):
     finally:
         conn.close()
 
+def get_db_connection():
+    return Connection(**DB_CONFIG)
+
+def get_calculation_params():
+    conn = get_db_connection()
+    try:
+        result = conn.run("SELECT param_name, param_value FROM calculation_params")
+        return {row[0]: row[1] for row in result}
+    finally:
+        conn.close()
+
+def update_param(param_name, new_value):
+    conn = get_db_connection()
+    try:
+        conn.run(
+            "UPDATE calculation_params SET param_value = :value WHERE param_name = :name",
+            value=new_value, name=param_name
+        )
+    finally:
+        conn.close()
+
 def calculate_price(data):
-    """Функция расчета стоимости (заглушка)"""
-    # TODO: Реализовать реальный расчет
+    params = get_calculation_params()
+    
     cost_jpy = data['cost']
     age = data['age']
     engine_type = data['engine']
     volume = data['volume']
     purpose = data['purpose']
     
-    # Пример простого расчета (замените на реальную логику)
-    result_cost = cost_jpy * 0.008  # Примерный курс JPY to USD
+    # Пример расчета с использованием параметров из БД
+    # 'calculation_details': {
+        #     'customs_duty': customs_duty,
+        #     'vat': vat,
+        #     'recycling_fee': recycling_fee
+        # }
+    cost_usd = cost_jpy * params['exchange_rate']
+    customs_duty = cost_usd * params['customs_duty']
+    vat = (cost_usd + customs_duty) * params['vat_rate']
+    recycling_fee = params['recycling_fee']
+    
+    result_cost = cost_usd + customs_duty + vat + recycling_fee
     
     return {
         **data,
-        'result_cost': int(result_cost)
+        'result_cost': int(result_cost),
     }
 
 @bot.message_handler(commands=['start'])
@@ -128,23 +159,36 @@ def handle_start(message):
 def start_calculation(message):
     user_data[message.chat.id] = {
         'step': 'cost',
-        'username': message.from_user.username  # Сохраняем username для получения user_id позже
+        'username': message.from_user.username,
+        'history': []  # Добавляем историю шагов
     }
-    bot.send_message(message.chat.id, "Введите цену автомобиля в Японии в Йенах:")
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(KeyboardButton("Назад"))
+    bot.send_message(
+        message.chat.id,
+        "Введите цену автомобиля в Японии в Йенах:",
+        reply_markup=markup
+    )
 
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'cost')
 def get_cost(message):
+    if message.text == "Назад":
+        handle_start(message)
+        return
+        
     try:
         cost = int(message.text)
         if cost <= 0:
             raise ValueError
         user_data[message.chat.id]['cost'] = cost
         user_data[message.chat.id]['step'] = 'age'
+        user_data[message.chat.id]['history'].append('cost')
         
         markup = ReplyKeyboardMarkup(resize_keyboard=True)
         markup.add(KeyboardButton("Младше 3 лет"))
         markup.add(KeyboardButton("От 3 до 5 лет"))
         markup.add(KeyboardButton("Старше 5 лет"))
+        markup.add(KeyboardButton("Назад"))
         
         bot.send_message(
             message.chat.id,
@@ -154,13 +198,26 @@ def get_cost(message):
     except ValueError:
         bot.send_message(message.chat.id, "Пожалуйста, введите корректную сумму в Йенах (целое число больше 0)")
 
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'age')
-def get_age(message):
-    age_mapping = {
+age_mapping = {
         "Младше 3 лет": 1,
         "От 3 до 5 лет": 2,
         "Старше 5 лет": 3
     }
+
+@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'age')
+def get_age(message):
+    if message.text == "Назад":
+        user_data[message.chat.id]['step'] = 'cost'
+        markup = ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(KeyboardButton("Назад"))
+        bot.send_message(
+            message.chat.id,
+            "Введите цену автомобиля в Японии в Йенах:",
+            reply_markup=markup
+        )
+        return
+    
+    
     
     if message.text not in age_mapping:
         bot.send_message(message.chat.id, "Пожалуйста, выберите вариант из предложенных")
@@ -168,10 +225,12 @@ def get_age(message):
     
     user_data[message.chat.id]['age'] = age_mapping[message.text]
     user_data[message.chat.id]['step'] = 'engine'
+    user_data[message.chat.id]['history'].append('age')
     
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("Бензин или дизель"))
     markup.add(KeyboardButton("Электро"))
+    markup.add(KeyboardButton("Назад"))
     
     bot.send_message(
         message.chat.id,
@@ -181,6 +240,20 @@ def get_age(message):
 
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'engine')
 def get_engine(message):
+    if message.text == "Назад":
+        user_data[message.chat.id]['step'] = 'age'
+        markup = ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(KeyboardButton("Младше 3 лет"))
+        markup.add(KeyboardButton("От 3 до 5 лет"))
+        markup.add(KeyboardButton("Старше 5 лет"))
+        markup.add(KeyboardButton("Назад"))
+        bot.send_message(
+            message.chat.id,
+            "Выберите возраст автомобиля:",
+            reply_markup=markup
+        )
+        return
+    
     engine_mapping = {
         "Бензин или дизель": 1,
         "Электро": 2
@@ -192,25 +265,44 @@ def get_engine(message):
     
     user_data[message.chat.id]['engine'] = engine_mapping[message.text]
     user_data[message.chat.id]['step'] = 'volume'
+    user_data[message.chat.id]['history'].append('engine')
+    
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(KeyboardButton("Назад"))
     
     bot.send_message(
         message.chat.id,
         "Введите объем двигателя в см³ (целое число):",
-        reply_markup=telebot.types.ReplyKeyboardRemove()
+        reply_markup=markup
     )
 
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'volume')
 def get_volume(message):
+    if message.text == "Назад":
+        user_data[message.chat.id]['step'] = 'engine'
+        markup = ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(KeyboardButton("Бензин или дизель"))
+        markup.add(KeyboardButton("Электро"))
+        markup.add(KeyboardButton("Назад"))
+        bot.send_message(
+            message.chat.id,
+            "Выберите тип двигателя:",
+            reply_markup=markup
+        )
+        return
+    
     try:
         volume = int(message.text)
         if volume <= 0:
             raise ValueError
         user_data[message.chat.id]['volume'] = volume
         user_data[message.chat.id]['step'] = 'purpose'
+        user_data[message.chat.id]['history'].append('volume')
         
         markup = ReplyKeyboardMarkup(resize_keyboard=True)
         markup.add(KeyboardButton("Да, для личного пользования"))
         markup.add(KeyboardButton("Нет, для коммерческого использования"))
+        markup.add(KeyboardButton("Назад"))
         
         bot.send_message(
             message.chat.id,
@@ -222,6 +314,17 @@ def get_volume(message):
 
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'purpose')
 def get_purpose(message):
+    if message.text == "Назад":
+        user_data[message.chat.id]['step'] = 'volume'
+        markup = ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(KeyboardButton("Назад"))
+        bot.send_message(
+            message.chat.id,
+            "Введите объем двигателя в см³ (целое число):",
+            reply_markup=markup
+        )
+        return
+    
     if message.text not in ["Да, для личного пользования", "Нет, для коммерческого использования"]:
         bot.send_message(message.chat.id, "Пожалуйста, выберите вариант из предложенных")
         return
@@ -257,15 +360,14 @@ def get_purpose(message):
         message.chat.id,
         f"Результат расчета:\n\n"
         f"Цена в Японии: {calculation_data['cost']} JPY\n"
-        f"Возраст: {message.text}\n"
+        f"Возраст: {list(filter(lambda k: age_mapping[k] == calculation_data['age'], age_mapping))[0]}\n"
         f"Тип двигателя: {'Бензин/дизель' if calculation_data['engine'] == 1 else 'Электро'}\n"
         f"Объем: {calculation_data['volume']} см³\n"
         f"Назначение: {'Личное' if purpose else 'Коммерческое'}\n\n"
-        f"Итоговая стоимость: {calculation_data['result_cost']} USD",
+        f"Итоговая стоимость: {calculation_data['result_cost']} RUB",
         reply_markup=inline_markup
     )
 
-    # Затем отправляем сообщение с обычной клавиатурой
     bot.send_message(
         message.chat.id,
         "Выполнить новый расчет:",
